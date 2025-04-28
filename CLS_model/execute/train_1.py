@@ -321,8 +321,8 @@ def main():
                         help="specify the lr scheduler used, default None")
     parser.add_argument('--batch_size', type=int, default=128,
                         help="the batch size for training")
-    parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--backbone_lr', default=1e-4, type=float,
+    parser.add_argument('--epochs', type=int, default=300)
+    parser.add_argument('--backbone_lr', default=2e-4, type=float,
                         help='the learning rate for MIL encoder')
     parser.add_argument('--fc_lr', default=1e-4, type=float,
                         help='the learning rate for FC')
@@ -337,7 +337,7 @@ def main():
                         help="the number of epoch for training without lr scheduler, if scheduler is not None")
     parser.add_argument('--wdecay', default=1e-5, type=float,
                         help="the weight decay of optimizer")
-    parser.add_argument('--patience', type=int, default=None,
+    parser.add_argument('--patience', type=int, default=30,
                         help="if the loss not change during `patience` epochs, the training will early stop")
     parser.add_argument('--alpha', type=float, default=0.9)
     parser.add_argument('--projection_dim', type=int, default=128)

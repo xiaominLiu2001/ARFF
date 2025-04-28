@@ -26,3 +26,8 @@ After running these scripts, the following output files will be generated:
 
 ### Step 3: Training and Testing
 Execute the Python scripts in the `execute` directory to train the classification model and test its performance on the dataset.
+```
+cd execute
+sh fold0_sh/train_clam.sh
+sh fold0_sh/train_arff.sh
+```
