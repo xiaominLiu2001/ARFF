@@ -209,12 +209,12 @@ def main():
     parser.add_argument('--overview_level', type=int, default=-1,
                         help="the down-sample level of overview image")
     parser.add_argument('--device', type=int, default=0, help="GPU device number to use")
-    parser.add_argument('--mask_dir', type=str, default='/home/liuxm/ARFF/Dataset_FTD/FTD_ANN_true')
-    parser.add_argument('--save_dir', type=str, default='/home/liuxm/ARFF/Reg_model/data_FTD')
-    parser.add_argument('--thumbnail_dir', type=str, default='/home/liuxm/ARFF/Dataset_FTD/FTD_thumbs')
+    parser.add_argument('--mask_dir', type=str, default='/home/ARFF/Dataset_FTD/FTD_ANN')
+    parser.add_argument('--save_dir', type=str, default='/home/ARFF/data_FTD')
+    parser.add_argument('--thumbnail_dir', type=str, default='/home/ARFF/Dataset_FTD/FTD_thumbs')
     parser.add_argument('--wsi_format', type=str, default='.tiff', choices=['.svs', '.tif', '.tiff'])
-    parser.add_argument('--excel_path', type=str,  default='/home/liuxm/ARFF/Dataset_FTD/FTD.xlsx')
-    parser.add_argument('--base_path_tiff', type=str,  default='/home/liuxm/Dataset')
+    parser.add_argument('--excel_path', type=str,  default='/homeARFF/Dataset_FTD/FTD.xlsx')
+    parser.add_argument('--base_path_tiff', type=str,  default='/home/Dataset')
     args = parser.parse_args()
     run(args)
 

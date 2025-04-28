@@ -10,17 +10,16 @@ from torch.utils.tensorboard import SummaryWriter
 import sys
 root_path = Path(__file__).resolve().parent.parent
 sys.path.append(str(root_path))
-
 from tools.datasets import WSIWithCluster, mixup, fusion_features_weighted, sample_feats
 from tools.general import AverageMeter, CSVWriter, EarlyStop, increment_path, BestVariable, init_seeds, save_checkpoint, load_json
-from models import ppo, clam, cl
+from models import ppo, clam
 from tools.losses import NT_Xent
 
 
 def create_save_dir(args):
     dir1 = args.dataset
     dir2 = f'train_1'
-    dir3 = args.arch
+    dir3 = f'CLAM_SB'
     dir4 = f'stage_{args.train_stage}'
     args.save_dir = str(Path(args.base_save_dir) / dir1 / dir2 / dir3 / dir4)
     print(f"save_dir: {args.save_dir}")
@@ -31,33 +30,23 @@ def get_datasets(args):
         data_csv=args.data_csv+'/fold_'+args.fold_id+'.csv',
         indices=indices,
         shuffle=True,
-        preload=args.preload,
     )
     print('args.num_clusters', args.num_clusters)
     return train_set, train_set.patch_dim, len(train_set)
 
 
 def create_model(args, dim_patch):
-    print(f"Creating model {args.arch}...")
     device = torch.device('cuda' if torch.cuda.is_available() and not args.device == 'cpu' else 'cpu')
-    # Create raw model
-    if args.arch == 'CLAM_SB':
-        model = clam.CLAM_SB(
-            gate=True,
-            size_arg=args.size_arg,
-            dropout=True,
-            k_sample=args.k_sample,
-            n_classes=args.projection_dim,
-            subtyping=True,
-            in_dim=dim_patch
-        )
-    else:
-        raise NotImplementedError(f'args.arch error, {args.arch}. ')
-    # Wrapping with CL structure
-    if args.arch == 'CLAM_SB':
-        model = cl.CL(model, projection_dim=args.projection_dim, n_features=model.classifiers.in_features)
-    else:
-        raise NotImplementedError
+    model = clam.CLAM_SB(
+        gate=True,
+        size_arg=args.size_arg,
+        dropout=True,
+        k_sample=args.k_sample,
+        n_classes=args.projection_dim,
+        subtyping=True,
+        in_dim=dim_patch
+    )
+    model = ppo.CL(model, projection_dim=args.projection_dim, n_features=model.classifiers.in_features)
     fc = ppo.Full_layer(args.feature_num, args.fc_hidden_dim, args.fc_rnn, args.projection_dim)#projection_dim=128
     ppo = None
 
@@ -65,15 +54,9 @@ def create_model(args, dim_patch):
     if args.train_stage == 1:
         pass
     elif args.train_stage == 2:
-        # if not specify the checkpoint path, use the default path produced from previous stage path.
-        if args.checkpoint is None:
-            args.checkpoint = str(Path(args.save_dir).parent / 'stage_1' / 'model_best.pth.tar')
-        assert Path(args.checkpoint).exists(), f"{args.checkpoint} is not exist!"
-
-        checkpoint = torch.load(args.checkpoint)
+        checkpoint = torch.load(str(Path(args.save_dir).parent / 'stage_1' / 'model_best.pth.tar'))
         model.load_state_dict(checkpoint['model_state_dict'])
         fc.load_state_dict(checkpoint['fc'])
-
         state_dim = args.model_dim
         ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
                         action_std=args.action_std,
@@ -82,11 +65,7 @@ def create_model(args, dim_patch):
                         K_epochs=args.K_epochs,
                         action_size=args.num_clusters)
     elif args.train_stage == 3:
-        if args.checkpoint is None:
-            args.checkpoint = str(Path(args.save_dir).parent / 'stage_2' / 'model_best.pth.tar')
-        assert Path(args.checkpoint).exists(), f'{str(args.checkpoint)} is not exists!'
-
-        checkpoint = torch.load(args.checkpoint)
+        checkpoint = torch.load(str(Path(args.save_dir).parent / 'stage_2' / 'model_best.pth.tar'))
         model.load_state_dict(checkpoint['model_state_dict'])
         fc.load_state_dict(checkpoint['fc'])
         state_dim = args.model_dim
@@ -123,7 +102,7 @@ def get_optimizer(args, model, fc):
             raise NotImplementedError
     else:
         optimizer = None
-        args.epochs = args.ppo_epochs
+        args.epochs = 30
     return optimizer
 
 
@@ -141,7 +120,6 @@ def get_scheduler(args, optimizer):
     return scheduler
 
 
-# Basic Functions ------------------------------------------------------------------------------------------------------
 def train(args, train_set, model, fc, ppo, criterion, optimizer, scheduler, tb_writer, save_dir):
     save_dir = Path(save_dir)
     best_train_loss = BestVariable(order='min')
@@ -162,7 +140,6 @@ def train(args, train_set, model, fc, ppo, criterion, optimizer, scheduler, tb_w
         if optimizer is not None:
             for k, group in enumerate(optimizer.param_groups):
                 print(f"group[{k}]: {group['lr']}")
-
         train_set.shuffle()
         length = len(train_set)
         losses = [AverageMeter() for _ in range(args.T)]
@@ -184,7 +161,6 @@ def train(args, train_set, model, fc, ppo, criterion, optimizer, scheduler, tb_w
                 F_Ck = sample_feats(feat_list, cluster_list, feat_size=args.feat_size)
                 action_sequences = [torch.ones((len(feat_list), args.num_clusters), device=feat_list[0].device) / args.num_clusters for _ in
                                     range(2)]
-
                 x_views = [fusion_features_weighted(F_Ck, a, feat_size=args.feat_size) for a in
                            action_sequences]
                 x_views = [mixup(x, args.alpha)[0] for x in x_views]
@@ -288,7 +264,7 @@ def run(args):
         create_save_dir(args)
     else:
         args.save_dir = str(Path(args.base_save_dir) / args.save_dir)
-    args.save_dir = increment_path(Path(args.save_dir), exist_ok=args.exist_ok, sep='_')  # increment run
+    args.save_dir = increment_path(Path(args.save_dir), exist_ok=True, sep='_')  # increment run
     Path(args.save_dir).mkdir(parents=True, exist_ok=True)
 
     if not args.device == 'cpu':
@@ -302,7 +278,7 @@ def run(args):
     train_set, dim_patch, train_length = get_datasets(args)
     args.num_data = train_length * args.data_repeat
     args.eval_step = int(args.num_data / args.batch_size)
-    print(f"line369-train_length: {train_length}, epoch_step: {args.num_data}, eval_step: {args.eval_step}")
+    print(f"train_length: {train_length}, epoch_step: {args.num_data}, eval_step: {args.eval_step}")
 
     model, fc, ppo = create_model(args, dim_patch)
     criterion = NT_Xent(args.batch_size, args.temperature)
@@ -313,25 +289,25 @@ def run(args):
         yaml.dump(vars(args), fp, sort_keys=False)
     print(args, '\n')
     tb_writer = SummaryWriter(args.save_dir) if args.use_tensorboard else None
-
     train(args, train_set, model, fc, ppo, criterion, optimizer, scheduler, tb_writer, args.save_dir)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    # Data
     parser.add_argument('--dataset', type=str, default='AD',
                         help="dataset name")
     parser.add_argument('--fold_id', type=str, default='0',
                         help="fold id")
     parser.add_argument('--data_csv', type=str,help="the .csv filepath used")
     parser.add_argument('--data_split_json', type=str)
-    parser.add_argument('--preload', action='store_true', default=False,
-                        help="preload the patch features, default False")
+    parser.add_argument('--device', default='0',
+                        help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--seed', type=int, default=2021,help="random state")
+    parser.add_argument('--num_clusters', type=int, default=6)
+    parser.add_argument('--base_save_dir', type=str, default='./fold_results_AD')
     parser.add_argument('--data_repeat', type=int, default=10,
                         help="contrastive learning need more iteration to train, the arg is to repeat data training for one epoch")
     parser.add_argument('--feat_size', default=1024, type=int)
-    # Train
     parser.add_argument('--train_stage', default=1, type=int,
                         help="select training stage \
                               stage-1 : warm-up \
@@ -345,10 +321,7 @@ def main():
                         help="specify the lr scheduler used, default None")
     parser.add_argument('--batch_size', type=int, default=128,
                         help="the batch size for training")
-    parser.add_argument('--epochs', type=int, default=100,
-                        help="")
-    parser.add_argument('--ppo_epochs', type=int, default=30,
-                        help="the training epochs for R")
+    parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--backbone_lr', default=1e-4, type=float,
                         help='the learning rate for MIL encoder')
     parser.add_argument('--fc_lr', default=1e-4, type=float,
@@ -366,9 +339,6 @@ def main():
                         help="the weight decay of optimizer")
     parser.add_argument('--patience', type=int, default=None,
                         help="if the loss not change during `patience` epochs, the training will early stop")
-    parser.add_argument('--checkpoint', default=None, type=str,
-                        help="path to the stage-1/2 checkpoint (for training stage-2/3)")
-    parser.add_argument('--arch', default='CLAM_SB', type=str, choices=['CLAM_SB'], help='model name')
     parser.add_argument('--alpha', type=float, default=0.9)
     parser.add_argument('--projection_dim', type=int, default=128)
     parser.add_argument('--model_dim', type=int, default=512)
@@ -384,25 +354,13 @@ def main():
     parser.add_argument('--size_arg', type=str, default='small', choices=['small', 'big'])
     parser.add_argument('--k_sample', type=int, default=8)
     parser.add_argument('--use_tensorboard', action='store_true', default=False)
-    parser.add_argument('--base_save_dir', type=str, default='./fold_results_AD')
-    parser.add_argument('--save_dir', type=str, default=None,
-                        help="specify the save directory to save experiment results, default None."
-                             "If not specify, the directory will be create by function create_save_dir(args)")
-    parser.add_argument('--save_dir_flag', type=str, default=None,
-                        help="append a `string` to the end of save_dir")
-    parser.add_argument('--exist_ok', action='store_true', default=False)
-    parser.add_argument('--device', default='0',
-                        help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--seed', type=int, default=2021,help="random state")
-    parser.add_argument('--num_clusters', type=int, default=6)
+    parser.add_argument('--save_dir', type=str, default=None)
     args = parser.parse_args()
-
     run(args)
 
 
 
 if __name__ == '__main__':
-
     pd.set_option('display.max_columns', None)
     pd.set_option('display.max_rows', None)
     torch.set_num_threads(1)

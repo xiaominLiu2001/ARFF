@@ -25,174 +25,98 @@ import time
 def create_save_dir(args):
     dir1 = args.dataset
     dir2 = f'train_2_cls'
-    dir3 = args.arch
+    dir3 = f'CLAM_SB'
     dir4 = f'stage_{args.train_stage}'
     args.save_dir = str(Path(args.base_save_dir) / dir1 / dir2 / dir3 / dir4)
     print(f"save_dir: {args.save_dir}")
 
 def get_datasets(args):
-    print(f"train_data: {args.train_data}")
     indices = load_json(args.data_split_json)[args.fold_id]
     train_set = WSIWithCluster(
         data_csv=args.data_csv+'/fold_'+args.fold_id+'.csv',
-        indices=indices[args.train_data],
+        indices=indices['train'],
         num_sample_patches=args.feat_size,
-        shuffle=True,
-        preload=args.preload
-    )
+        shuffle=True)
     valid_set = WSIWithCluster(
         data_csv=args.data_csv+'/fold_'+args.fold_id+'.csv',
         indices=indices['val'],
         num_sample_patches=args.feat_size,
-        shuffle=False,
-        preload=args.preload
-    )
+        shuffle=False)
     test_set = WSIWithCluster(
         data_csv=args.data_csv+'/fold_'+args.fold_id+'.csv',
         indices=indices['val'],
         num_sample_patches=args.feat_size,
-        shuffle=False,
-        preload=args.preload
-    )
+        shuffle=False)
     # args.num_clusters = train_set.num_clusters
     return {'train': train_set, 'valid': valid_set, 'test': test_set}, train_set.patch_dim, len(train_set)
 
 
 def create_model(args, dim_patch):
-    print(f"Creating model {args.arch}...")
-    if args.arch == 'ABMIL':
-        model = abmil.ABMIL(
-            dim_in=dim_patch,
-            L=args.L,
-            D=args.D,
-            dim_out=args.num_classes,
-            dropout=args.dropout,
-        )
-        args.feature_num = args.L
-    elif args.arch == 'CLAM_SB':
-        model = clam.CLAM_SB(
-            gate=True,
-            size_arg=args.size_arg,
-            dropout=True,
-            k_sample=args.k_sample,
-            n_classes=args.num_classes,
-            subtyping=True,
-            in_dim=dim_patch
-        )
-        args.feature_num = dim_patch
-    else:
-        raise ValueError(f'args.arch error, {args.arch}. ')
+    model = clam.CLAM_SB(
+        gate=True,
+        size_arg=args.size_arg,
+        dropout=True,
+        k_sample=args.k_sample,
+        n_classes=args.num_classes,
+        subtyping=True,
+        in_dim=dim_patch
+    )
+    args.feature_num = dim_patch
     fc = ppo.Full_layer(512, args.fc_hidden_dim, args.fc_rnn, args.num_classes)
     ppo = None
 
-    if args.train_method in ['finetune']:
-        if args.train_stage == 1:
-            assert args.checkpoint_pretrained is not None and Path(
-                args.checkpoint_pretrained).exists(), f"{args.checkpoint_pretrained} is not exists!"
+    if args.train_stage == 1:
+        assert args.checkpoint_pretrained is not None and Path(
+            args.checkpoint_pretrained).exists(), f"{args.checkpoint_pretrained} is not exists!"
 
-            checkpoint = torch.load(args.checkpoint_pretrained)
-            model_state_dict = checkpoint['model_state_dict']
-            for k in list(model_state_dict.keys()):
-                if k.startswith('encoder') and not k.startswith('encoder.fc') and not k.startswith('encoder.classifiers'):
-                    model_state_dict[k[len('encoder.'):]] = model_state_dict[k]
-                del model_state_dict[k]
-            msg_model = model.load_state_dict(model_state_dict, strict=False)
-            print(f"msg_model missing_keys: {msg_model.missing_keys}")
+        checkpoint = torch.load(args.checkpoint_pretrained)
+        model_state_dict = checkpoint['model_state_dict']
+        for k in list(model_state_dict.keys()):
+            if k.startswith('encoder') and not k.startswith('encoder.fc') and not k.startswith('encoder.classifiers'):
+                model_state_dict[k[len('encoder.'):]] = model_state_dict[k]
+            del model_state_dict[k]
+        msg_model = model.load_state_dict(model_state_dict, strict=False)
+        print(f"msg_model missing_keys: {msg_model.missing_keys}")
 
-        elif args.train_stage == 2:
-            if args.checkpoint_stage is None:
-                args.checkpoint_stage = str(Path(args.save_dir).parent / 'stage_1' / 'model_best.pth.tar')
-            assert Path(args.checkpoint_stage).exists(), f"{args.checkpoint_stage} is not exist!"
+    elif args.train_stage == 2:
+        checkpoint_stage = str(Path(args.save_dir).parent / 'stage_1' / 'model_best.pth.tar')
+        checkpoint = torch.load(checkpoint_stage)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        fc.load_state_dict(checkpoint['fc'])
 
-            checkpoint = torch.load(args.checkpoint_stage)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            fc.load_state_dict(checkpoint['fc'])
+        assert args.checkpoint_pretrained is not None and Path(
+            args.checkpoint_pretrained).exists(), f"{args.checkpoint_pretrained} is not exists!"
+        checkpoint = torch.load(args.checkpoint_pretrained)
+        state_dim = args.model_dim
+        ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
+                        action_std=args.action_std,
+                        lr=args.ppo_lr,
+                        gamma=args.ppo_gamma,
+                        K_epochs=args.K_epochs,
+                        action_size=args.num_clusters)
+        ppo.policy.load_state_dict(checkpoint['policy'])
+        ppo.policy_old.load_state_dict(checkpoint['policy'])
 
-            assert args.checkpoint_pretrained is not None and Path(
-                args.checkpoint_pretrained).exists(), f"{args.checkpoint_pretrained} is not exists!"
-            checkpoint = torch.load(args.checkpoint_pretrained)
-            state_dim = args.model_dim
-            ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
-                            action_std=args.action_std,
-                            lr=args.ppo_lr,
-                            gamma=args.ppo_gamma,
-                            K_epochs=args.K_epochs,
-                            action_size=args.num_clusters)
-            ppo.policy.load_state_dict(checkpoint['policy'])
-            ppo.policy_old.load_state_dict(checkpoint['policy'])
+    elif args.train_stage == 3:
+        checkpoint_stage = str(Path(args.save_dir).parent / 'stage_2' / 'model_best.pth.tar')
+        checkpoint = torch.load(checkpoint_stage)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        fc.load_state_dict(checkpoint['fc'])
 
-        elif args.train_stage == 3:
-            if args.checkpoint_stage is None:
-                args.checkpoint_stage = str(Path(args.save_dir).parent / 'stage_2' / 'model_best.pth.tar')
-            assert Path(args.checkpoint_stage).exists(), f"{args.checkpoint_stage} is not exist!"
-
-            checkpoint = torch.load(args.checkpoint_stage)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            fc.load_state_dict(checkpoint['fc'])
-
-            state_dim = args.model_dim
-            ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
-                            action_std=args.action_std,
-                            lr=args.ppo_lr,
-                            gamma=args.ppo_gamma,
-                            K_epochs=args.K_epochs,
-                            action_size=args.num_clusters)
-            ppo.policy.load_state_dict(checkpoint['policy'])
-            ppo.policy_old.load_state_dict(checkpoint['policy'])
-
-            if args.train_method == 'linear':
-                for n, p in model.named_parameters():
-                    # print(f"key: {n}")
-                    if n.startswith('fc') or n.startswith('classifiers') or n.startswith('instance_classifiers'):
-                        print(f"not_fixed_key: {n}")
-                    else:
-                        p.requires_grad = False
-        else:
-            raise ValueError
-    elif args.train_method in ['scratch']:
-        if args.train_stage == 1:
-            pass
-        elif args.train_stage == 2:
-            if args.checkpoint_stage is None:
-                args.checkpoint_stage = str(Path(args.save_dir).parent / 'stage_1' / 'model_best.pth.tar')
-            assert Path(args.checkpoint_stage).exists(), f"{args.checkpoint_stage} is not exist!"
-            checkpoint = torch.load(args.checkpoint_stage)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            fc.load_state_dict(checkpoint['fc'])
-
-            state_dim = args.model_dim
-            ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
-                            action_std=args.action_std,
-                            lr=args.ppo_lr,
-                            gamma=args.ppo_gamma,
-                            K_epochs=args.K_epochs,
-                            action_size=args.num_clusters)
-        elif args.train_stage == 3:
-            if args.checkpoint_stage is None:
-                args.checkpoint_stage = str(Path(args.save_dir).parent / 'stage_2' / 'model_best.pth.tar')
-            assert Path(args.checkpoint_stage).exists(), f'{str(args.checkpoint_stage)} is not exists!'
-
-            checkpoint = torch.load(args.checkpoint_stage)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            fc.load_state_dict(checkpoint['fc'])
-
-            state_dim = args.model_dim
-            ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
-                            action_std=args.action_std,
-                            lr=args.ppo_lr,
-                            gamma=args.ppo_gamma,
-                            K_epochs=args.K_epochs,
-                            action_size=args.num_clusters)
-            ppo.policy.load_state_dict(checkpoint['policy'])
-            ppo.policy_old.load_state_dict(checkpoint['policy'])
-        else:
-            raise ValueError
+        state_dim = args.model_dim
+        ppo = ppo.PPO(dim_patch, state_dim, args.policy_hidden_dim, args.policy_conv,
+                        action_std=args.action_std,
+                        lr=args.ppo_lr,
+                        gamma=args.ppo_gamma,
+                        K_epochs=args.K_epochs,
+                        action_size=args.num_clusters)
+        ppo.policy.load_state_dict(checkpoint['policy'])
+        ppo.policy_old.load_state_dict(checkpoint['policy'])
     else:
         raise ValueError
 
     model = torch.nn.DataParallel(model).cuda()
     fc = fc.cuda()
-
     assert model is not None, "creating model failed. "
     print(f"model Total params: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     print(f"fc Total params: {sum(p.numel() for p in fc.parameters()) / 1e6:.2f}M")
@@ -223,7 +147,7 @@ def get_optimizer(args, model, fc):
             raise NotImplementedError
     else:
         optimizer = None
-        args.epochs = args.ppo_epochs
+        args.epochs = 30
     return optimizer
 
 
@@ -241,13 +165,12 @@ def get_scheduler(args, optimizer):
     return scheduler
 
 
-# Train Model Functions ------------------------------------------------------------------------------------------------
 def train_CLAM(args, epoch, train_set, model, fc, ppo, memory, criterion, optimizer, scheduler):
     length = len(train_set)
     train_set.shuffle()
-    losses = [AverageMeter() for _ in range(args.T)]  # 损失记录器，args.T指定了时间步长
-    top1 = [AverageMeter() for _ in range(args.T)]  # 准确率记录器
-    reward_list = [AverageMeter() for _ in range(args.T - 1)]  # 奖励记录器，用于强化学习部分
+    losses = [AverageMeter() for _ in range(args.T)]
+    top1 = [AverageMeter() for _ in range(args.T)]
+    reward_list = [AverageMeter() for _ in range(args.T - 1)]
 
     if args.train_stage == 2:
         model.eval()
@@ -271,7 +194,7 @@ def train_CLAM(args, epoch, train_set, model, fc, ppo, memory, criterion, optimi
         label_list.append(label)
         step += 1
         if step == args.batch_size or data_idx == args.num_data - 1:
-            labels = torch.cat(label_list)# 合并标签torch.Size([1])
+            labels = torch.cat(label_list)
             F_Ck = sample_feats(feat_list, cluster_list, feat_size=args.feat_size)
             action_sequence = torch.ones((len(feat_list), args.num_clusters), device=feat_list[0].device) / args.num_clusters
             feats = fusion_features_weighted(F_Ck, action_sequence, feat_size=args.feat_size)
@@ -367,23 +290,19 @@ def test_CLAM(args, test_set, model, fc, ppo, memory, criterion):
             case_id_list.append(case_id)
 
         loss_list = []
-
         labels = torch.cat(label_list)
         F_Ck = sample_feats(feat_list, cluster_list, feat_size=args.feat_size)
         action_sequence = torch.ones((len(feat_list), args.num_clusters),
                                      device=feat_list[0].device) / args.num_clusters
         feats = fusion_features_weighted(F_Ck, action_sequence, feat_size=args.feat_size)
-
         outputs, states, result_dict = model(feats, label=labels, instance_eval=True)
         outputs = fc(outputs, restart=True)
-
         ins_loss = 0
         for r in result_dict:
             ins_loss = ins_loss + r['instance_loss']
         ins_loss = ins_loss / len(feat_list)
         loss = args.bag_weight * criterion(outputs, labels) + (1 - args.bag_weight) * ins_loss
         loss_list.append(loss)
-
         confidence_last = torch.gather(F.softmax(outputs.detach(), 1), dim=1, index=labels.view(-1, 1)).view(1, -1)
         for patch_step in range(1, args.T):
             if args.train_stage == 1:
@@ -398,8 +317,6 @@ def test_CLAM(args, test_set, model, fc, ppo, memory, criterion):
             feats = fusion_features_weighted(F_Ck, action, feat_size=args.feat_size)
             outputs, states, result_dict = model(feats, label=labels, instance_eval=True)
             outputs = fc(outputs, restart=False)
-
-
             ins_loss = 0
             for r in result_dict:
                 ins_loss = ins_loss + r['instance_loss']
@@ -422,10 +339,7 @@ def test_CLAM(args, test_set, model, fc, ppo, memory, criterion):
         acc, auc, precision, recall, f1_score = get_metrics(outputs, labels)
     return losses[-1].avg, acc, auc, precision, recall, f1_score, outputs, labels, case_id_list
 
-
-# Basic Functions ------------------------------------------------------------------------------------------------------
 def train(args, train_set, valid_set, test_set, model, fc, ppo, memory, criterion, optimizer, scheduler, tb_writer):
-    # Init variables
     save_dir = args.save_dir
     best_train_acc = BestVariable(order='max')
     best_valid_acc = BestVariable(order='max')
@@ -458,11 +372,11 @@ def train(args, train_set, valid_set, test_set, model, fc, ppo, memory, criterio
                 print(f"group[{k}]: {group['lr']}")
 
         train_loss, train_acc, train_auc, train_precision, train_recall, train_f1_score = \
-            TRAIN[args.arch](args, epoch, train_set, model, fc, ppo, memory, criterion, optimizer, scheduler)
+            train_CLAM(args, epoch, train_set, model, fc, ppo, memory, criterion, optimizer, scheduler)
         valid_loss, valid_acc, valid_auc, valid_precision, valid_recall, valid_f1_score, *_ = \
-            TEST[args.arch](args, valid_set, model, fc, ppo, memory, criterion)
+            test_CLAM(args, valid_set, model, fc, ppo, memory, criterion)
         test_loss, test_acc, test_auc, test_precision, test_recall, test_f1_score, *_ = \
-            TEST[args.arch](args, test_set, model, fc, ppo, memory, criterion)
+            test_CLAM(args, test_set, model, fc, ppo, memory, criterion)
 
         if tb_writer is not None:
             tb_writer.add_scalar('train/1.train_loss', train_loss, epoch)
@@ -512,16 +426,13 @@ def train(args, train_set, valid_set, test_set, model, fc, ppo, memory, criterio
         }
         if is_best:
             best_model = copy.deepcopy(state)
-            if args.save_model:
-                save_checkpoint(state, is_best, str(save_dir))
+            save_checkpoint(state, is_best, str(save_dir))
         if is_equal:
             best_model = copy.deepcopy(state)
-            if args.save_model:
-                save_equal_checkpoint(state, str(save_dir),epoch,test_acc)
+            save_equal_checkpoint(state, str(save_dir),epoch,test_acc)
         if is_best_valid:
             best_model = copy.deepcopy(state)
-            if args.save_model:
-                save_valid_checkpoint(state, str(save_dir),epoch,valid_acc)
+            save_valid_checkpoint(state, str(save_dir),epoch,valid_acc)
 
         losses_csv.write_row([epoch + 1, train_loss, valid_loss, test_loss,
                               (best_train_loss.best, best_train_loss.epoch),
@@ -567,7 +478,7 @@ def test(args, test_set, model, fc, ppo, memory, criterion):
     fc.eval()
     with torch.no_grad():
         loss, acc, auc, precision, recall, f1_score, outputs_tensor, labels_tensor, case_id_list = \
-            TEST[args.arch](args, test_set, model, fc, ppo, memory, criterion)
+            test_CLAM(args, test_set, model, fc, ppo, memory, criterion)
         prob = torch.softmax(outputs_tensor, dim=1)
         _, pred = torch.max(prob, dim=1)
         preds = pd.DataFrame(columns=['label', 'pred', 'correct', *[f'prob{i}' for i in range(prob.shape[1])]])
@@ -590,7 +501,7 @@ def run(args):
         create_save_dir(args)
     else:
         args.save_dir = str(Path(args.base_save_dir) / args.save_dir)
-    args.save_dir = increment_path(Path(args.save_dir), exist_ok=args.exist_ok, sep='_')  # increment run
+    args.save_dir = increment_path(Path(args.save_dir), exist_ok=True, sep='_')
     Path(args.save_dir).mkdir(parents=True, exist_ok=True)
 
     if not args.device == 'cpu':
@@ -599,7 +510,6 @@ def run(args):
     else:
         args.device = torch.device('cpu')
 
-    # Dataset
     datasets, dim_patch, train_length = get_datasets(args)
     print("dim_patch", dim_patch)
     args.num_data = train_length
@@ -636,41 +546,36 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser()
-    # Data
     parser.add_argument('--dataset', type=str, default='AD',
                         help="dataset name")
+    parser.add_argument('--num_classes', type=int, default=4)
     parser.add_argument('--fold_id', type=str, default='0',
                         help="fold id")
     parser.add_argument('--data_csv', type=str, help="the .csv filepath used")
     parser.add_argument('--data_split_json', type=str)
-    parser.add_argument('--train_data', type=str, default='train', choices=['train', 'train_sub_per10'],
-                        help="specify how much data used")
-    parser.add_argument('--preload', action='store_true', default=False,
-                        help="preload the patch features, default False")
     parser.add_argument('--feat_size', default=1024, type=int)
-    parser.add_argument('--train_method', type=str, default='finetune')
-    parser.add_argument('--train_stage', default=1, type=int,
-                        help="select training stage \
-                                  stage-1 : warm-up \
-                                  stage-2 : learn to select patches with RL \
-                                  stage-3 : finetune")
-    parser.add_argument('--T', default=6, type=int,
-                        help="maximum length of the sequence of RNNs")
-    parser.add_argument('--checkpoint_stage', default=None, type=str,
-                        help="path to the stage-1/2 checkpoint (for training stage-2/3)")
+    parser.add_argument('--train_stage', default=1, type=int)
     parser.add_argument('--checkpoint_pretrained', type=str, default=None,
                         help='path to the pretrained checkpoint (for finetune and linear)')
-    parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'],
-                        help="specify the optimizer used, default Adam")
+    parser.add_argument('--T', default=6, type=int,
+                        help="maximum length of the sequence of RNNs")
+    parser.add_argument('--loss', default='CrossEntropyLoss', type=str, choices=LOSSES,
+                        help='loss name')
     parser.add_argument('--scheduler', type=str, default='CosineAnnealingLR', choices=[None, 'StepLR', 'CosineAnnealingLR'],
                         help="specify the lr scheduler used, default None")
+    parser.add_argument('--picked_method', type=str, default='acc',
+                        help="the metric of pick best model from validation dataset")
     parser.add_argument('--batch_size', type=int, default=1,
                         help="the batch size for training")
     parser.add_argument('--epochs', type=int, default=200)
-    parser.add_argument('--ppo_epochs', type=int, default=30,
-                        help="the training epochs for R")
     parser.add_argument('--backbone_lr', default=5e-5, type=float)
     parser.add_argument('--fc_lr', default=2e-5, type=float)
+    parser.add_argument('--num_clusters', type=int, default=6)
+    parser.add_argument('--device', default='0',help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument('--seed', type=int, default=2021,help="random state")
+    parser.add_argument('--base_save_dir', type=str, default='./results_AD')
+    parser.add_argument('--optimizer', type=str, default='Adam', choices=['Adam', 'SGD'],
+                        help="specify the optimizer used, default Adam")
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--nesterov', action='store_true', default=True)
     parser.add_argument('--beta1', type=float, default=0.9)
@@ -679,12 +584,8 @@ def main():
                         help="the number of epoch for training without lr scheduler, if scheduler is not None")
     parser.add_argument('--wdecay', default=1e-5, type=float,
                         help="the weight decay of optimizer")
-    parser.add_argument('--picked_method', type=str, default='acc',
-                        help="the metric of pick best model from validation dataset")
     parser.add_argument('--patience', type=int, default=None,
                         help="if the loss not change during `patience` epochs, the training will early stop")
-    parser.add_argument('--arch', default='CLAM_SB', type=str, choices=MODELS, help='model name')
-    parser.add_argument('--num_classes', type=int, default=4)
     parser.add_argument('--model_dim', type=int, default=512)
     parser.add_argument('--policy_hidden_dim', type=int, default=512)
     parser.add_argument('--policy_conv', action='store_true', default=False)
@@ -699,21 +600,10 @@ def main():
     parser.add_argument('--size_arg', type=str, default='small', choices=['small', 'big'])
     parser.add_argument('--k_sample', type=int, default=8)
     parser.add_argument('--bag_weight', type=float, default=0.7)
-    parser.add_argument('--loss', default='CrossEntropyLoss', type=str, choices=LOSSES,
-                        help='loss name')
     parser.add_argument('--use_tensorboard', action='store_true', default=False)
-    parser.add_argument('--base_save_dir', type=str, default='./results_AD')
     parser.add_argument('--save_dir', type=str, default=None,
                         help="specify the save directory to save experiment results, default None."
                              "If not specify, the directory will be create by function create_save_dir(args)")
-    parser.add_argument('--save_dir_flag', type=str, default=None,
-                        help="append a `string` to the end of save_dir")
-    parser.add_argument('--exist_ok', action='store_true', default=False)
-    parser.add_argument('--save_model', action='store_true', default=False)
-    parser.add_argument('--device', default='0',
-                        help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
-    parser.add_argument('--seed', type=int, default=2021,help="random state")
-    parser.add_argument('--num_clusters', type=int, default=6)
     args = parser.parse_args()
     run(args)
 
@@ -724,6 +614,6 @@ if __name__ == '__main__':
     torch.set_num_threads(1)
     MODELS = ['CLAM_SB']
     LOSSES = ['CrossEntropyLoss']
-    TRAIN = {'CLAM_SB': train_CLAM,}
+    TRAIN = {'CLAM_SB': train_CLAMtrain_CLAM,}
     TEST = {'CLAM_SB': test_CLAM,}
     main()

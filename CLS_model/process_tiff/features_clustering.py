@@ -28,7 +28,6 @@ def save_to_json(features_cluster_indices, num_clusters, filepath=None):
 def run(args):
     save_dir = Path(args.feat_dir) / f'k-means-{args.num_clusters}'
     save_dir.mkdir(parents=True, exist_ok=True)
-
     img_features_npz = sorted(list(Path(args.feat_dir).glob('*.npz')))
     img_features_npz_bar = tqdm(img_features_npz)
     for i, feat_npz in enumerate(img_features_npz):
@@ -38,12 +37,10 @@ def run(args):
         if npz_filepath.exists() and not args.exist_ok:
             print(f"{npz_filepath} is exists!")
             continue
-
         feat_dict = np.load(str(feat_npz))
         if feat_dict['img_features'].shape[0] < args.num_clusters:
             print(f"{feat_npz.stem}'s number of features < number of clusters, can't clustering.")
             continue
-
         # clustering and save as .npz file and .json file
         features_cluster_indices = clustering(feat_dict['img_features'], args.num_clusters, filepath=npz_filepath)
         save_to_json(features_cluster_indices, args.num_clusters, filepath=json_filepath)
@@ -53,7 +50,6 @@ def run(args):
         )
         img_features_npz_bar.update()
     img_features_npz_bar.close()
-
 
 def main():
     parser = argparse.ArgumentParser()

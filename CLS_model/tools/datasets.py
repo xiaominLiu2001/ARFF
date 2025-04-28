@@ -15,14 +15,12 @@ class WSIDataset(Dataset):
                  num_sample_patches: int = None,
                  fixed_size: bool = False,
                  shuffle: bool = False,
-                 patch_random: bool = False,
-                 preload: bool = True) -> None:
+                 patch_random: bool = False) -> None:
         super(WSIDataset, self).__init__()
         self.data_csv = data_csv
         self.indices = indices
         self.num_sample_patches = num_sample_patches
         self.fixed_size = fixed_size
-        self.preload = preload
         self.patch_random = patch_random
         self.samples = self.process_data()
         if self.indices is None:
@@ -30,20 +28,14 @@ class WSIDataset(Dataset):
         if shuffle:
             self.shuffle()
         self.patch_dim = np.load(self.samples.iat[0, 0])['img_features'].shape[-1]
-        if self.preload:
-            self.patch_features = self.load_patch_features()
+        self.patch_features = self.load_patch_features()
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, str]:
         case_id = self.indices[index]
-
-        if self.preload:
-            patch_feature = self.patch_features[case_id]
-        else:
-            patch_feature = np.load(self.samples.at[case_id, 'features_filepath'])['img_features']
-
+        patch_feature = self.patch_features[case_id]
         patch_feature = self.sample_feat(patch_feature)
         if self.fixed_size:
             patch_feature = self.fix_size(patch_feature)
@@ -99,25 +91,15 @@ class WSIWithCluster(WSIDataset):
                  num_sample_patches: int = None,
                  fixed_size: bool = False,
                  shuffle: bool = False,
-                 patch_random: bool = False,
-                 preload: bool = True) -> None:
-        super(WSIWithCluster, self).__init__(data_csv, indices, num_sample_patches, fixed_size, shuffle, patch_random,
-                                             preload)
+                 patch_random: bool = False) -> None:
+        super(WSIWithCluster, self).__init__(data_csv, indices, num_sample_patches, fixed_size, shuffle, patch_random)
         self.num_clusters = int(4)
-        if self.preload:
-            self.cluster_indices = self.load_cluster_indices()
+        self.cluster_indices = self.load_cluster_indices()
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, List[List[int]], torch.Tensor, str]:
         case_id = self.indices[index]
-
-        if self.preload:
-            patch_feature, cluster_indices = self.patch_features[case_id], self.cluster_indices[case_id]
-        else:
-            patch_feature = np.load(self.samples.at[case_id, 'features_filepath'])['img_features']
-            cluster_indices = load_json(self.samples.at[case_id, 'clusters_json_filepath'])
-
+        patch_feature, cluster_indices = self.patch_features[case_id], self.cluster_indices[case_id]
         patch_feature = torch.as_tensor(patch_feature, dtype=torch.float32)
-
         label = self.samples.at[case_id, 'label']
         label = torch.tensor(label, dtype=torch.long)
         return patch_feature, cluster_indices, label, case_id
@@ -173,7 +155,6 @@ def fusion_features_weighted(F_Ck: List[List[torch.Tensor]],
 
     batch_size = len(F_Ck)
     result_feats = []
-
     for i in range(batch_size):
         batch_weights = weights[i]
         batch_clusters = F_Ck[i]
