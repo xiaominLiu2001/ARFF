@@ -215,8 +215,17 @@ def train_CLAM(args, epoch, train_set, model, fc, ppo, memory, criterion, optimi
             confidence_last = torch.gather(F.softmax(outputs.detach(), 1), dim=1, index=labels.view(-1, 1)).view(1, -1)
             for patch_step in range(1, args.T):
                 if args.train_stage == 1:
+                    # equal
                     action_sequence = torch.ones((len(feat_list), args.num_clusters),
                                                  device=feat_list[0].device) / args.num_clusters
+                    # # random
+                    # action_s = torch.randn(len(feat_list), args.num_clusters, device=feat_list[0].device)
+                    # action_sequence = torch.softmax(action_s, dim=1)
+                    # # graded
+                    # mean_vector = torch.linspace(-1.0, 1.0, args.num_clusters)
+                    # mean_matrix = mean_vector.repeat(len(feat_list), 1)
+                    # action_sequence = torch.normal(mean=mean_matrix, std=1.0).to(feat_list[0].device)
+                    # action_sequence = torch.softmax(action_sequence, dim=1)
                 else:
                     if patch_step == 1:
                         action_sequence = ppo.select_action(states.to(0), memory, restart_batch=True)
